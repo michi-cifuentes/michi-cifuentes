@@ -116,7 +116,7 @@ async function entrar(user) {
     return mostrar('v-intro');
   }
   const i = primeraSinResponder();
-  indice = i === -1 ? 0 : i;
+  indice = i === -1 ? TOTAL - 1 : i; // si ya respondió todo, queda listo para crear el perfil
   pintarPregunta();
   mostrar('v-cuestionario');
 }
@@ -127,7 +127,7 @@ $('btn-empezar').addEventListener('click', async () => {
   acepto = true;
   await guardar();
   const i = primeraSinResponder();
-  indice = i === -1 ? 0 : i;
+  indice = i === -1 ? TOTAL - 1 : i; // si ya respondió todo, queda listo para crear el perfil
   pintarPregunta();
   mostrar('v-cuestionario');
 });
@@ -220,7 +220,7 @@ $('btn-revisar').addEventListener('click', () => { indice = 0; pintarPregunta();
 function htmlResultado(res, nombre) {
   const plataformas = (res.plataformas || []).map((p) =>
     typeof p === 'string' ? `<li>${esc(p)}</li>` : `<li><strong>${esc(p.nombre)}:</strong> ${esc(p.por_que)}</li>`).join('');
-  const ideas = (res.sugerencias || []).map((s) => `
+  const ideas = (res.sugerencias || []).map((s, i) => `
     <li class="idea">
       <div>
         <h3>${esc(s.titulo)}</h3>
@@ -228,9 +228,11 @@ function htmlResultado(res, nombre) {
           ${s.formato ? `<span class="etiqueta">${esc(s.formato)}</span>` : ''}
           ${s.plataforma ? `<span class="etiqueta">${esc(s.plataforma)}</span>` : ''}
           ${s.frecuencia ? `<span class="etiqueta">${esc(s.frecuencia)}</span>` : ''}
+          ${s.objetivo ? `<span class="etiqueta etiqueta-obj">Objetivo: ${esc(s.objetivo)}</span>` : ''}
         </div>
         <p>${esc(s.descripcion)}</p>
-        ${s.ejemplo ? `<div class="idea-ejemplo"><strong>Ejemplo de publicación:</strong> ${esc(s.ejemplo)}</div>` : ''}
+        ${s.ejemplo ? `<div class="idea-ejemplo"><strong>Primer episodio:</strong> ${esc(s.ejemplo)}</div>` : ''}
+        <div class="guia" data-guia="${i}">${s.guia ? htmlGuia(s.guia, s) : htmlGuiaEspera()}</div>
       </div>
     </li>`).join('');
   const fecha = new Date().toLocaleDateString('es', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -260,9 +262,127 @@ function htmlResultado(res, nombre) {
     <p class="pie-pdf">Michi Cifuentes · Diagnóstico de marca personal · ${esc(fecha)}</p>`;
 }
 
+
+/* ---------- guía paso a paso de cada idea ---------- */
+const ICONO_VIDEO = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3z"/></svg>';
+const ICONO_DIAPO = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M2 6v12M22 6v12"/></svg>';
+// Ilustración de fondo según el tipo de toma, para que cada escena se entienda de un vistazo.
+function ilustracionPlano(plano, video) {
+  const t = (plano || '').toLowerCase();
+  if (!video) return '<svg class="ilus" viewBox="0 0 100 125" aria-hidden="true"><rect x="14" y="18" width="72" height="10" rx="3"/><rect x="14" y="36" width="54" height="6" rx="3"/><rect x="14" y="88" width="40" height="18" rx="5"/></svg>';
+  if (/mano|detalle|objeto|producto|cuaderno|taza/.test(t)) return '<svg class="ilus" viewBox="0 0 100 178" aria-hidden="true"><path d="M30 150v-46a8 8 0 0 1 16 0v-22a8 8 0 0 1 16 0v18a8 8 0 0 1 16 0v50z"/><rect x="18" y="56" width="44" height="30" rx="4" transform="rotate(-12 40 71)"/></svg>';
+  if (/pantalla|screen|computador|celular|app/.test(t)) return '<svg class="ilus" viewBox="0 0 100 178" aria-hidden="true"><rect x="16" y="58" width="68" height="46" rx="5"/><rect x="40" y="108" width="20" height="8"/><rect x="30" y="116" width="40" height="5" rx="2"/></svg>';
+  if (/general|lugar|ambiente|caminando|exterior/.test(t)) return '<svg class="ilus" viewBox="0 0 100 178" aria-hidden="true"><path d="M0 150l28-42 18 24 16-20 38 38z"/><circle cx="74" cy="72" r="9"/></svg>';
+  return '<svg class="ilus" viewBox="0 0 100 178" aria-hidden="true"><circle cx="50" cy="124" r="17"/><path d="M18 178c0-24 14-38 32-38s32 14 32 38z"/></svg>';
+}
+const esVideo = (formato) => /reel|video|tiktok|short|historia|story|live|vivo/i.test(formato || '');
+
+function htmlGuiaEspera() {
+  return `<div class="guia-estado"><span class="mini-carga"></span><span>En cola: tu guía paso a paso se prepara en unos segundos.</span></div>`;
+}
+function htmlGuiaCargando() {
+  return `<div class="guia-estado"><span class="mini-carga"></span><span>Preparando la guía paso a paso, el guion visual y el texto de la publicación…</span></div>`;
+}
+
+function htmlGuia(g, idea) {
+  const video = esVideo(idea?.formato);
+  const cuadros = (g.guion || []).map((e, i) => `
+    <figure class="cuadro">
+      <div class="pantalla ${video ? 'vertical' : 'cuadrada'}">
+        <span class="pantalla-num">${i + 1}</span>
+        <span class="pantalla-icono">${video ? ICONO_VIDEO : ICONO_DIAPO}</span>
+        ${ilustracionPlano(e.plano, video)}
+        <p class="pantalla-texto">${esc(e.texto_pantalla || '')}</p>
+        <span class="pantalla-plano">${esc(e.plano || '')}</span>
+      </div>
+      <figcaption>
+        <strong>${esc(e.momento || '')}</strong>
+        ${e.se_ve ? `<span><b>Se ve:</b> ${esc(e.se_ve)}</span>` : ''}
+        ${e.dices ? `<span><b>${video ? 'Dices' : 'Texto'}:</b> ${esc(e.dices)}</span>` : ''}
+      </figcaption>
+    </figure>`).join('');
+
+  const pasos = (g.pasos || []).map((p) => `
+    <li><span class="fase">${esc(p.fase || '')}</span><span>${esc(p.accion || p)}</span></li>`).join('');
+
+  const tags = (g.hashtags || []).map((h) => `<span class="etiqueta">${esc(h)}</span>`).join('');
+
+  return `
+    <div class="guia-cabecera">
+      <h4>Guía paso a paso</h4>
+      ${g.objetivo ? `<p>${esc(g.objetivo)}</p>` : ''}
+      ${g.duracion ? `<span class="etiqueta">${esc(g.duracion)}</span>` : ''}
+    </div>
+
+    <h5>Guion visual</h5>
+    <div class="guion-visual">${cuadros}</div>
+
+    <h5>Cómo hacerlo</h5>
+    <ol class="pasos-guia">${pasos}</ol>
+
+    ${g.copy ? `
+    <h5>Texto de la publicación</h5>
+    <div class="copy-caja">
+      <p class="copy-texto">${esc(g.copy)}${g.llamado_accion ? `\n\n${esc(g.llamado_accion)}` : ''}</p>
+      ${tags ? `<div class="idea-meta">${tags}</div>` : ''}
+      <button class="btn-texto no-imprimir" data-copiar>Copiar texto</button>
+    </div>` : ''}
+
+    <div class="guia-datos">
+      ${g.cuando_publicar ? `<div><h6>Cuándo publicar</h6><p>${esc(g.cuando_publicar)}</p></div>` : ''}
+      ${(g.herramientas || []).length ? `<div><h6>Herramientas</h6><ul>${lista(g.herramientas)}</ul></div>` : ''}
+      ${g.como_medir ? `<div><h6>Cómo saber si funcionó</h6><p>${esc(g.como_medir)}</p></div>` : ''}
+      ${(g.errores_a_evitar || []).length ? `<div><h6>Errores a evitar</h6><ul>${lista(g.errores_a_evitar)}</ul></div>` : ''}
+    </div>`;
+}
+
+// Genera, una por una, las guías que falten. userId solo lo usa el admin para completar las de un cliente.
+async function completarGuias(res, raiz, userId = null) {
+  if (raiz._generando && raiz._res === res) return;
+  raiz._res = res; // si se abre otro perfil en la misma ventana, la generación anterior se detiene
+  raiz._generando = true;
+  raiz.onclick = async (e) => {
+    const copiar = e.target.closest('[data-copiar]');
+    if (copiar) {
+      const texto = copiar.closest('.copy-caja').querySelector('.copy-texto').innerText
+        + '\n\n' + [...copiar.closest('.copy-caja').querySelectorAll('.etiqueta')].map((t) => t.innerText).join(' ');
+      try { await navigator.clipboard.writeText(texto.trim()); toast('Texto copiado'); } catch { toast('Selecciona el texto y cópialo manualmente'); }
+    }
+    if (e.target.closest('[data-reintentar]')) completarGuias(res, raiz, userId);
+  };
+  try {
+    const ideas = res.sugerencias || [];
+    for (let i = 0; i < ideas.length; i++) {
+      if (raiz._res !== res) return;
+      if (ideas[i].guia) continue;
+      const cont = raiz.querySelector(`[data-guia="${i}"]`);
+      if (!cont) continue;
+      cont.innerHTML = htmlGuiaCargando();
+      try {
+        const r = await fetch('/.netlify/functions/detallar-idea', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await token()}` },
+          body: JSON.stringify({ indice: i, user_id: userId }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || (r.status >= 500 ? 'La IA tardó más de lo permitido.' : 'No se pudo preparar la guía.'));
+        ideas[i].guia = data.guia;
+        cont.innerHTML = htmlGuia(data.guia, ideas[i]);
+      } catch (err) {
+        cont.innerHTML = `<div class="guia-estado guia-error"><span>${esc(err.message)}</span>
+          <button class="btn-sec no-imprimir" data-reintentar>Reintentar guía</button></div>`;
+        break; // si la IA está saturada, las siguientes también fallarían: se espera al reintento
+      }
+    }
+  } finally {
+    if (raiz._res === res) raiz._generando = false;
+  }
+}
+
 function verResultadoPropio(res) {
   $('resultado-contenido').innerHTML = htmlResultado(res, perfil.nombre || perfil.usuario);
   mostrar('v-resultado');
+  completarGuias(res, $('resultado-contenido'));
 }
 
 function imprimir(nombre) {
@@ -442,6 +562,7 @@ async function verCliente(u) {
   }
   html += `<div class="no-imprimir"><h2 style="margin-top:2rem">Respuestas</h2>${htmlRespuestas(r?.respuestas)}</div>`;
   abrirDialogo(u.nombre, html);
+  if (o?.resultado) completarGuias(o.resultado, $('dialogo-cuerpo'), u.id);
   $('btn-pdf-cliente')?.addEventListener('click', () => {
     document.body.classList.add('imprimiendo-dialogo');
     imprimir(u.nombre);
