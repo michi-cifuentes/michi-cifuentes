@@ -73,33 +73,44 @@ export default async (req) => {
     (p, i) => `${i + 1}. ${p.texto}\nRespuesta: ${String(r[p.id]).slice(0, 1500)}`
   ).join('\n\n');
 
-  const modelo = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  // Modelo por defecto. Si Google retira este modelo, crea en Netlify la variable GEMINI_MODEL con el nombre nuevo.
+  const modelo = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`;
+
+  // Menos "razonamiento" = respuesta más rápida, para no pasar el tiempo límite de Netlify (~10 s).
+  const pensamiento = /gemini-2\.5/.test(modelo)
+    ? { thinkingBudget: 0 }
+    : /gemini-3/.test(modelo) ? { thinkingLevel: 'low' } : null;
+
+  const llamarIA = (conPensamiento) => fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': process.env.GEMINI_API_KEY },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: INSTRUCCIONES }] },
+      contents: [{ role: 'user', parts: [{ text: `Nombre: ${perfil.nombre}\n\n${textoRespuestas}` }] }],
+      generationConfig: {
+        temperature: 0.8,
+        maxOutputTokens: 4000,
+        responseMimeType: 'application/json',
+        ...(conPensamiento && pensamiento ? { thinkingConfig: pensamiento } : {}),
+      },
+    }),
+  });
 
   let resultado;
   try {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': process.env.GEMINI_API_KEY },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: INSTRUCCIONES }] },
-        contents: [{ role: 'user', parts: [{ text: `Nombre: ${perfil.nombre}\n\n${textoRespuestas}` }] }],
-        generationConfig: {
-          temperature: 0.8,
-          maxOutputTokens: 4000,
-          responseMimeType: 'application/json',
-          // Sin "pensamiento" extra: responde más rápido y cabe en el tiempo límite de Netlify
-          ...(modelo.includes('2.5') ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
-        },
-      }),
-    });
+    let resp = await llamarIA(true);
+    // Si el modelo no acepta el ajuste de razonamiento, se reintenta sin él.
+    if (resp.status === 400 && pensamiento) resp = await llamarIA(false);
     const data = await resp.json();
     if (!resp.ok) {
       const msg = data?.error?.message || resp.statusText;
       if (resp.status === 429) return json(429, { error: 'La IA alcanzó su límite gratuito por ahora. Intenta de nuevo en unos minutos.' });
       return json(502, { error: 'La IA no respondió correctamente: ' + msg });
     }
-    const texto = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('');
+    const texto = (data.candidates?.[0]?.content?.parts || [])
+      .filter((p) => !p.thought)
+      .map((p) => p.text || '').join('');
     resultado = extraerJSON(texto);
     if (!Array.isArray(resultado.sugerencias) || resultado.sugerencias.length === 0) throw new Error('sin sugerencias');
   } catch (e) {
