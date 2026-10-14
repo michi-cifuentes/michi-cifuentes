@@ -73,19 +73,24 @@ export default async (req) => {
     (p, i) => `${i + 1}. ${p.texto}\nRespuesta: ${String(r[p.id]).slice(0, 1500)}`
   ).join('\n\n');
 
-  // Modelo por defecto. Si Google retira este modelo, crea en Netlify la variable GEMINI_MODEL con el nombre nuevo.
-  const modelo = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`;
+  // Modelos en orden de preferencia. Si uno está saturado o no existe, se prueba el siguiente.
+  // Para forzar otro modelo primero, crea en Netlify la variable GEMINI_MODEL.
+  const modelos = [...new Set([
+    process.env.GEMINI_MODEL,
+    'gemini-3.8-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-3.1-flash-lite',
+    'gemini-3.5-flash',
+  ].filter(Boolean))];
 
-  // Menos "razonamiento" = respuesta más rápida, para no pasar el tiempo límite de Netlify (~10 s).
-  const pensamiento = /gemini-2\.5/.test(modelo)
-    ? { thinkingBudget: 0 }
-    : /gemini-3/.test(modelo) ? { thinkingLevel: 'low' } : null;
+  const inicio = Date.now();
+  const LIMITE_MS = 9500; // Netlify corta las funciones gratuitas cerca de los 10 s
 
-  const llamarIA = (conPensamiento) => fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': process.env.GEMINI_API_KEY },
-    body: JSON.stringify({
+  const cuerpo = (modelo, conPensamiento) => {
+    const pensamiento = /gemini-2\.5/.test(modelo)
+      ? { thinkingBudget: 0 }
+      : /gemini-3/.test(modelo) ? { thinkingLevel: 'low' } : null;
+    return JSON.stringify({
       systemInstruction: { parts: [{ text: INSTRUCCIONES }] },
       contents: [{ role: 'user', parts: [{ text: `Nombre: ${perfil.nombre}\n\n${textoRespuestas}` }] }],
       generationConfig: {
@@ -94,27 +99,64 @@ export default async (req) => {
         responseMimeType: 'application/json',
         ...(conPensamiento && pensamiento ? { thinkingConfig: pensamiento } : {}),
       },
-    }),
-  });
+    });
+  };
 
-  let resultado;
-  try {
-    let resp = await llamarIA(true);
-    // Si el modelo no acepta el ajuste de razonamiento, se reintenta sin él.
-    if (resp.status === 400 && pensamiento) resp = await llamarIA(false);
-    const data = await resp.json();
-    if (!resp.ok) {
-      const msg = data?.error?.message || resp.statusText;
-      if (resp.status === 429) return json(429, { error: 'La IA alcanzó su límite gratuito por ahora. Intenta de nuevo en unos minutos.' });
-      return json(502, { error: 'La IA no respondió correctamente: ' + msg });
+  const llamar = async (modelo, conPensamiento) => {
+    const restante = LIMITE_MS - (Date.now() - inicio);
+    if (restante < 1500) return { status: 504, data: null };
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), restante);
+    try {
+      const resp = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': process.env.GEMINI_API_KEY },
+          body: cuerpo(modelo, conPensamiento),
+          signal: ctrl.signal,
+        }
+      );
+      const data = await resp.json().catch(() => null);
+      return { status: resp.status, ok: resp.ok, data };
+    } catch {
+      return { status: 504, data: null };
+    } finally {
+      clearTimeout(t);
     }
-    const texto = (data.candidates?.[0]?.content?.parts || [])
-      .filter((p) => !p.thought)
-      .map((p) => p.text || '').join('');
-    resultado = extraerJSON(texto);
-    if (!Array.isArray(resultado.sugerencias) || resultado.sugerencias.length === 0) throw new Error('sin sugerencias');
-  } catch (e) {
-    return json(502, { error: 'No se pudo generar el perfil. Intenta de nuevo en un momento.' });
+  };
+
+  let resultado = null;
+  let ultimoError = { status: 502, msg: '' };
+
+  for (const modelo of modelos) {
+    let r = await llamar(modelo, true);
+    if (r.status === 400) r = await llamar(modelo, false); // el modelo no acepta el ajuste de razonamiento
+    if (r.ok) {
+      try {
+        const texto = (r.data?.candidates?.[0]?.content?.parts || [])
+          .filter((p) => !p.thought)
+          .map((p) => p.text || '').join('');
+        const intento = extraerJSON(texto);
+        if (Array.isArray(intento.sugerencias) && intento.sugerencias.length) { resultado = intento; break; }
+      } catch { /* respuesta incompleta: probar el siguiente modelo */ }
+      ultimoError = { status: 502, msg: 'respuesta incompleta' };
+      continue;
+    }
+    ultimoError = { status: r.status, msg: r.data?.error?.message || '' };
+    if (r.status === 504) break; // sin tiempo para más intentos
+    // 404 (no existe), 429 (límite), 500/503 (saturado): se prueba el siguiente modelo
+  }
+
+  if (!resultado) {
+    const s = ultimoError.status;
+    const error =
+      s === 429 ? 'La IA alcanzó su límite gratuito por ahora. Intenta de nuevo en unos minutos.'
+      : s === 503 || s === 500 ? 'La IA está saturada en este momento. Espera un par de minutos y presiona "Intentar de nuevo". Tus respuestas están guardadas.'
+      : s === 504 ? 'La IA tardó más de lo permitido. Presiona "Intentar de nuevo".'
+      : 'No se pudo generar el perfil. Intenta de nuevo en un momento.';
+    console.log('Fallo IA:', s, ultimoError.msg);
+    return json(s === 429 ? 429 : 502, { error });
   }
 
   const { error: errGuardar } = await sb.from('resultados').upsert({
